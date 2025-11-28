@@ -9,11 +9,25 @@ import InterestRateCurve from './components/InterestRateCurve'
 import TransactionStream from './components/TransactionStream'
 import LiquidationTimeline from './components/LiquidationTimeline'
 import LoanModal from './components/LoanModal'
+import ProtocolControls from './components/ProtocolControls'
 import { generateMockData, simulateRealtimeUpdates } from './utils/mockData'
 import './App.css'
 
 function App() {
-  const [data, setData] = useState(generateMockData())
+  const [protocolParams, setProtocolParams] = useState({
+    interestRate: 10,
+    ltvRatio: 150,
+    liquidationThreshold: 75,
+    liquidationPenalty: 5,
+    protocolFee: 0.1,
+    minLoanAmount: 100,
+    maxLoanAmount: 100000,
+    loanDuration: 365,
+    gracePeriod: 7,
+    utilizationTarget: 80,
+    ethVolatility: 2
+  })
+  const [data, setData] = useState(generateMockData(protocolParams))
   const [selectedLoan, setSelectedLoan] = useState(null)
   const [isLive, setIsLive] = useState(true)
 
@@ -21,11 +35,22 @@ function App() {
     if (!isLive) return
 
     const interval = setInterval(() => {
-      setData(prevData => simulateRealtimeUpdates(prevData))
+      setData(prevData => simulateRealtimeUpdates(prevData, protocolParams))
     }, 2000) // Update every 2 seconds
 
     return () => clearInterval(interval)
-  }, [isLive])
+  }, [isLive, protocolParams])
+
+  const handleParamsChange = (newParams) => {
+    setProtocolParams(newParams)
+    // Regenerate data with new parameters
+    setData(prevData => ({
+      ...prevData,
+      ...generateMockData(newParams),
+      // Keep current timestamp to maintain continuity
+      timestamp: prevData.timestamp
+    }))
+  }
 
   const handleLoanClick = (loan) => {
     setSelectedLoan(loan)
@@ -132,6 +157,11 @@ function App() {
           onClose={handleCloseLoanModal}
         />
       )}
+
+      <ProtocolControls
+        currentParams={protocolParams}
+        onParamsChange={handleParamsChange}
+      />
     </div>
   )
 }

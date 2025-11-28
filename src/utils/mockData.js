@@ -1,43 +1,77 @@
 // Generate mock data for TrustLend Protocol
-export function generateMockData() {
-  const loans = generateLoans(50)
-  const priceHistory = generatePriceHistory(100)
-  const recentTransactions = generateTransactions(20)
-  const recentEvents = generateEvents(15)
+export function generateMockData(params = {}) {
+  // Default parameters
+  const {
+    interestRate = 10,
+    ltvRatio = 150,
+    liquidationThreshold = 75,
+    liquidationPenalty = 5,
+    protocolFee = 0.1,
+    minLoanAmount = 100,
+    maxLoanAmount = 100000,
+    loanDuration = 365,
+    gracePeriod = 7,
+    utilizationTarget = 80,
+    ethVolatility = 2
+  } = params
+
+  const loans = generateLoans(50, { interestRate, ltvRatio, liquidationThreshold, minLoanAmount, maxLoanAmount })
+  const priceHistory = generatePriceHistory(100, ethVolatility)
+  const recentTransactions = generateTransactions(20, { protocolFee })
+  const recentEvents = generateEvents(15, liquidationThreshold)
+
+  const totalBorrowed = loans.reduce((sum, loan) => sum + loan.amount, 0)
+  const tvl = totalBorrowed * (200 / utilizationTarget) // Calculate TVL based on target utilization
+  const utilizationRate = (totalBorrowed / tvl) * 100
 
   return {
-    tvl: 10500000,
+    tvl,
     activeLoans: loans.length,
-    totalBorrowed: 5250000,
-    availableLiquidity: 5250000,
-    utilizationRate: 50,
-    currentAPY: 8.5,
+    totalBorrowed,
+    availableLiquidity: tvl - totalBorrowed,
+    utilizationRate,
+    currentAPY: calculateDynamicAPY(utilizationRate, utilizationTarget, interestRate),
     ethPrice: priceHistory[priceHistory.length - 1].price,
     loans,
     priceHistory,
     recentTransactions,
     recentEvents,
+    protocolParams: params,
     timestamp: Date.now()
   }
 }
 
+// Calculate dynamic APY based on utilization
+function calculateDynamicAPY(utilization, target, baseRate) {
+  if (utilization < target) {
+    return baseRate * (utilization / target)
+  } else {
+    const excessRatio = (utilization - target) / (100 - target)
+    return baseRate + (baseRate * excessRatio * 2)
+  }
+}
+
 // Generate individual loans
-function generateLoans(count) {
+function generateLoans(count, params = {}) {
+  const { interestRate = 10, ltvRatio = 150, liquidationThreshold = 75, minLoanAmount = 100, maxLoanAmount = 100000 } = params
   const loans = []
+  
   for (let i = 0; i < count; i++) {
-    const loanAmount = Math.random() * 9000 + 1000
-    const ltv = Math.random() * 0.6 + 0.2 // 20-80%
-    const healthFactor = 1 / ltv
+    const loanAmount = Math.random() * (maxLoanAmount - minLoanAmount) + minLoanAmount
+    const requiredCollateral = (loanAmount * ltvRatio) / 100
+    const currentLtv = (Math.random() * 0.5 + 0.3) * liquidationThreshold // 30-80% of liquidation threshold
+    const healthFactor = liquidationThreshold / currentLtv
     
     loans.push({
       id: `LOAN-${1000 + i}`,
       borrower: `0x${Math.random().toString(16).substr(2, 8)}...`,
       amount: loanAmount,
-      collateral: loanAmount * 1.5,
-      ltv: ltv * 100,
+      collateral: requiredCollateral,
+      ltv: currentLtv,
       healthFactor,
-      interestRate: 10,
+      interestRate: interestRate + (Math.random() - 0.5) * 2, // Small variation
       daysActive: Math.floor(Math.random() * 365),
+      liquidationThreshold,
       status: healthFactor < 1.2 ? 'danger' : healthFactor < 1.5 ? 'warning' : 'safe'
     })
   }
@@ -45,14 +79,14 @@ function generateLoans(count) {
 }
 
 // Generate ETH price history
-function generatePriceHistory(points) {
+function generatePriceHistory(points, volatility = 2) {
   const history = []
   let price = 2500
   const now = Date.now()
   
   for (let i = points; i >= 0; i--) {
     const timestamp = now - (i * 60000) // Every minute
-    price += (Math.random() - 0.5) * 50
+    price += (Math.random() - 0.5) * (volatility * 25) // Volatility affects price movement
     price = Math.max(2000, Math.min(3000, price))
     
     history.push({
@@ -66,17 +100,20 @@ function generatePriceHistory(points) {
 }
 
 // Generate transactions
-function generateTransactions(count) {
+function generateTransactions(count, params = {}) {
+  const { protocolFee = 0.1 } = params
   const types = ['loan', 'repayment', 'liquidation', 'deposit', 'withdrawal']
   const transactions = []
   
   for (let i = 0; i < count; i++) {
     const type = types[Math.floor(Math.random() * types.length)]
+    const amount = Math.random() * 10000 + 100
     transactions.push({
       id: `TX-${Date.now()}-${i}`,
       type,
       loanId: `LOAN-${1000 + Math.floor(Math.random() * 50)}`,
-      amount: Math.random() * 10000 + 100,
+      amount,
+      fee: amount * (protocolFee / 100),
       timestamp: Date.now() - (i * 5000),
       hash: `0x${Math.random().toString(16).substr(2, 16)}...`
     })
@@ -86,7 +123,7 @@ function generateTransactions(count) {
 }
 
 // Generate events
-function generateEvents(count) {
+function generateEvents(count, liquidationThreshold = 75) {
   const eventTypes = ['liquidation', 'nearLiquidation', 'saved', 'newLoan']
   const events = []
   
@@ -98,17 +135,18 @@ function generateEvents(count) {
       loanId: `LOAN-${1000 + Math.floor(Math.random() * 50)}`,
       timestamp: Date.now() - (i * 60000 * 5),
       price: 2500 + (Math.random() - 0.5) * 500,
-      message: getEventMessage(type)
+      threshold: liquidationThreshold,
+      message: getEventMessage(type, liquidationThreshold)
     })
   }
   
   return events
 }
 
-function getEventMessage(type) {
+function getEventMessage(type, threshold) {
   const messages = {
-    liquidation: 'Loan liquidated due to health factor',
-    nearLiquidation: 'Warning: Approaching liquidation threshold',
+    liquidation: `Loan liquidated - LTV exceeded ${threshold}%`,
+    nearLiquidation: `Warning: Approaching ${threshold}% liquidation threshold`,
     saved: 'Borrower added collateral, loan saved',
     newLoan: 'New loan created'
   }
@@ -116,8 +154,17 @@ function getEventMessage(type) {
 }
 
 // Simulate real-time updates
-export function simulateRealtimeUpdates(prevData) {
-  const newPrice = prevData.ethPrice + (Math.random() - 0.5) * 20
+export function simulateRealtimeUpdates(prevData, params = {}) {
+  const {
+    interestRate = 10,
+    liquidationThreshold = 75,
+    utilizationTarget = 80,
+    ethVolatility = 2,
+    protocolFee = 0.1
+  } = params
+
+  const priceChange = (Math.random() - 0.5) * (ethVolatility * 10)
+  const newPrice = prevData.ethPrice + priceChange
   const clampedPrice = Math.max(2000, Math.min(3000, newPrice))
   
   // Add new price point
@@ -130,32 +177,35 @@ export function simulateRealtimeUpdates(prevData) {
     }
   ]
   
-  // Update loans based on price
+  // Update loans based on price and new liquidation threshold
   const updatedLoans = prevData.loans.map(loan => {
     const collateralValue = (loan.collateral / prevData.ethPrice) * clampedPrice
     const newLtv = (loan.amount / collateralValue) * 100
-    const newHealthFactor = 1 / (newLtv / 100)
+    const newHealthFactor = liquidationThreshold / newLtv
     
     return {
       ...loan,
       ltv: newLtv,
       healthFactor: newHealthFactor,
+      liquidationThreshold,
       status: newHealthFactor < 1.2 ? 'danger' : newHealthFactor < 1.5 ? 'warning' : 'safe'
     }
   })
   
-  // Maybe add new transaction
+  // Maybe add new transaction with protocol fee
   let newTransactions = [...prevData.recentTransactions]
   if (Math.random() > 0.7) {
     const types = ['loan', 'repayment', 'liquidation', 'deposit', 'withdrawal']
     const type = types[Math.floor(Math.random() * types.length)]
+    const amount = Math.random() * 10000 + 100
     
     newTransactions = [
       {
         id: `TX-${Date.now()}`,
         type,
         loanId: `LOAN-${1000 + Math.floor(Math.random() * 50)}`,
-        amount: Math.random() * 10000 + 100,
+        amount,
+        fee: amount * (protocolFee / 100),
         timestamp: Date.now(),
         hash: `0x${Math.random().toString(16).substr(2, 16)}...`
       },
@@ -163,10 +213,48 @@ export function simulateRealtimeUpdates(prevData) {
     ]
   }
   
+  // Check for new events (liquidations, warnings)
+  let newEvents = [...prevData.recentEvents]
+  updatedLoans.forEach(loan => {
+    const prevLoan = prevData.loans.find(l => l.id === loan.id)
+    
+    // Check for liquidation
+    if (loan.healthFactor < 1 && prevLoan.healthFactor >= 1) {
+      newEvents = [
+        {
+          id: `EVENT-${Date.now()}-${loan.id}`,
+          type: 'liquidation',
+          loanId: loan.id,
+          timestamp: Date.now(),
+          price: clampedPrice,
+          threshold: liquidationThreshold,
+          message: `Loan liquidated - LTV exceeded ${liquidationThreshold}%`
+        },
+        ...newEvents.slice(0, 14)
+      ]
+    }
+    // Check for near liquidation
+    else if (loan.healthFactor < 1.2 && prevLoan.healthFactor >= 1.2) {
+      newEvents = [
+        {
+          id: `EVENT-${Date.now()}-${loan.id}`,
+          type: 'nearLiquidation',
+          loanId: loan.id,
+          timestamp: Date.now(),
+          price: clampedPrice,
+          threshold: liquidationThreshold,
+          message: `Warning: Approaching ${liquidationThreshold}% liquidation threshold`
+        },
+        ...newEvents.slice(0, 14)
+      ]
+    }
+  })
+  
   // Update metrics
   const totalBorrowed = updatedLoans.reduce((sum, loan) => sum + loan.amount, 0)
-  const tvl = totalBorrowed * 2
+  const tvl = totalBorrowed * (200 / utilizationTarget)
   const utilizationRate = (totalBorrowed / tvl) * 100
+  const currentAPY = calculateDynamicAPY(utilizationRate, utilizationTarget, interestRate)
   
   return {
     ...prevData,
@@ -174,10 +262,12 @@ export function simulateRealtimeUpdates(prevData) {
     priceHistory: newPriceHistory,
     loans: updatedLoans,
     recentTransactions: newTransactions,
+    recentEvents: newEvents,
     tvl,
     totalBorrowed,
     availableLiquidity: tvl - totalBorrowed,
     utilizationRate,
+    currentAPY,
     timestamp: Date.now()
   }
 }
